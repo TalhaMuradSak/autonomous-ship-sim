@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# RL eğitim çıktıları (checkpoint'ler büyük olabilir)
+rl_egitim_ciktilari/
+*.zip
+
+# TensorBoard logları
+tensorboard_logs/
+runs/
+
+# Editör ayarları
+.vscode/
+.idea/
+
+# İşletim sistemi dosyaları
+.DS_Store
+Thumbs.db
+
+# Zone.Identifier dosyaları (Windows'tan gelen)
+*:Zone.Identifier

@@ -1,0 +1,255 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="gemi_modeli">
+    <static>false</static>
+
+    <link name="govde">
+
+      <enable_wind>true</enable_wind>
+
+      <!-- Ağırlık ve atalet momentleri (deniz suyu, hacim: 245,0146 m3, watertight mesh) -->
+      <inertial>
+        <mass>128219</mass>
+        <inertia>
+          <ixx>512876</ixx>
+          <iyy>3205475</iyy>
+          <izz>3205475</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+        <!-- Başlangıç tahmini - kararlılık için test et -->
+        <pose>0 0 -1.0 0 0 0</pose>
+      </inertial>
+
+      <!-- Çarpışma geometrisi: gemi_govde.dae mesh'inden Python/trimesh ile
+           80 kesit alınarak türetilmiş 13 katmanlı kutu (compound collision).
+           Graded buoyancy mesh collision desteklemediği için primitive box
+           kullanılıyor. Toplam hacim ≈ 245.03 m³ (mesh watertight hacmiyle uyumlu).
+           Simetrik tek kutu üst/alt arasında fark yaratmadığı için gemi ters de
+           "dengede" kalabiliyordu; bu çok katmanlı, gövde profiline sadık yapı
+           hem doğru hacim dağılımını hem de devrilmeye karşı asimetriyi sağlıyor.
+           CoM z=-1.0'da (inertial/pose), bu değerin altı (ör. -0.3) test
+           edildiğinde devrilme gözlemlendi. -->
+
+      <collision name="collision_1">
+        <pose>0 0 -2.0015 0 0 0</pose>
+        <geometry><box><size>10.7088 1.2083 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_2">
+        <pose>0 0 -1.6627 0 0 0</pose>
+        <geometry><box><size>12.8669 2.8657 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_3">
+        <pose>0 0 -1.3239 0 0 0</pose>
+        <geometry><box><size>13.5691 3.7117 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_4">
+        <pose>0 0 -0.9852 0 0 0</pose>
+        <geometry><box><size>14.2052 4.2316 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_5">
+        <pose>0 0 -0.6464 0 0 0</pose>
+        <geometry><box><size>14.8982 4.5896 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_6">
+        <pose>0 0 -0.3076 0 0 0</pose>
+        <geometry><box><size>16.2647 4.8550 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_7">
+        <pose>0 0 0.0311 0 0 0</pose>
+        <geometry><box><size>17.5607 5.0293 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_8">
+        <pose>0 0 0.3699 0 0 0</pose>
+        <geometry><box><size>18.0520 5.1200 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_9">
+        <pose>0 0 0.7087 0 0 0</pose>
+        <geometry><box><size>18.4190 5.1823 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_10">
+        <pose>0 0 1.0475 0 0 0</pose>
+        <geometry><box><size>16.1725 4.7349 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_11">
+        <pose>0 0 1.3862 0 0 0</pose>
+        <geometry><box><size>11.1921 3.7355 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_12">
+        <pose>0 0 1.7250 0 0 0</pose>
+        <geometry><box><size>6.6211 2.6999 0.3388</size></box></geometry>
+      </collision>
+      <collision name="collision_13">
+        <pose>0 0 2.0920 0 0 0</pose>
+        <geometry><box><size>2.3303 1.1617 0.3952</size></box></geometry>
+      </collision>
+
+      <!-- Görsel geometri -->
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>meshes/gemi_govde.dae</uri>
+          </mesh>
+        </geometry>
+      </visual>
+
+      <sensor name="gps_sensor" type="navsat">
+        <always_on>true</always_on>
+        <update_rate>10</update_rate>
+        <topic>/model/gemi_modeli/navsat</topic>
+        <gz_frame_id>govde</gz_frame_id>
+      </sensor>
+
+      <sensor name="engel_lidar" type="gpu_lidar">
+        <pose>8 0 1.5 0 0 0</pose> <!-- pruva ucuna yakın, su üstü hizası -->
+        <topic>/model/gemi_modeli/lidar</topic>
+        <update_rate>10</update_rate>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>180</samples>
+              <resolution>1</resolution>
+              <min_angle>-1.5708</min_angle>  <!-- -90° -->
+              <max_angle>1.5708</max_angle>   <!-- +90° -->
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.5</min>
+            <max>100.0</max>
+            <resolution>0.1</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.02</stddev>
+          </noise>
+        </ray>
+        <always_on>1</always_on>
+        <visualize>true</visualize>
+      </sensor>
+
+    </link>
+
+        <!-- Dümen montajı: pervaneyi taşıyan, gövdeye yaw (Z) ekseninde bağlı döner parça.
+         Dıştan takma motor (outboard) mantığı: itki yönü, dümen açısıyla birlikte döner. -->
+    <link name="dumen">
+      <pose relative_to="govde">-9.5 0 -1.0 0 0 0</pose>
+      <inertial>
+        <mass>20</mass>
+        <inertia>
+          <ixx>0.5</ixx><iyy>0.5</iyy><izz>0.5</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="dumen_gorsel">
+        <geometry>
+          <box><size>0.3 0.15 0.6</size></box>
+        </geometry>
+      </visual>
+      <collision name="dumen_collision">
+        <geometry>
+          <box><size>0.3 0.15 0.6</size></box>
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="dumen_mili" type="revolute">
+      <parent>govde</parent>
+      <child>dumen</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-0.6109</lower>   <!-- -35 derece -->
+          <upper>0.6109</upper>    <!-- +35 derece -->
+        </limit>
+      </axis>
+    </joint>
+
+    <link name="pervane">
+      <pose relative_to="dumen">0 0 0 0 0 0</pose>
+      <inertial>
+        <mass>50</mass>
+        <inertia>
+          <ixx>0.3</ixx><iyy>0.3</iyy><izz>0.3</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="pervane_gorsel">
+        <geometry>
+          <cylinder><radius>0.4</radius><length>0.15</length></cylinder>
+        </geometry>
+      </visual>
+      <collision name="pervane_collision">
+        <geometry>
+          <cylinder><radius>0.4</radius><length>0.15</length></cylinder>
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="pervane_mili" type="revolute">
+      <parent>dumen</parent>
+      <child>pervane</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+        </limit>
+      </axis>
+    </joint>
+
+    <plugin filename="gz-sim-thruster-system" name="gz::sim::systems::Thruster">
+      <namespace>gemi_modeli</namespace>
+      <joint_name>pervane_mili</joint_name>
+      <fluid_density>1025</fluid_density>
+      <propeller_diameter>0.8</propeller_diameter>
+      <max_thrust_cmd>500000</max_thrust_cmd>
+      <min_thrust_cmd>-500000</min_thrust_cmd>
+    </plugin>
+
+        <!-- Dümen açısı kontrolü: hedef açı (radyan) komutla verilir, PID ile o açıya döner.
+         Topic: /model/gemi_modeli/joint/dumen_mili/0/cmd_pos (gz.msgs.Double) -->
+    <plugin filename="gz-sim-joint-position-controller-system" name="gz::sim::systems::JointPositionController">
+      <joint_name>dumen_mili</joint_name>
+      <p_gain>200</p_gain>
+      <i_gain>0</i_gain>
+      <d_gain>20</d_gain>
+      <cmd_max>5000</cmd_max>
+      <cmd_min>-5000</cmd_min>
+    </plugin>
+
+    <!-- Hidrodinamik sönümleme (Fossen 6-DOF modeli)
+         velocity_decay gz-sim'de etkisiz olduğu için gerçek sönümleme burada sağlanıyor.
+         Aşağıdaki değerler başlangıç tahminidir (gövde boyutlarından kabaca türetildi,
+         gerçek katsayılar deneysel/CFD ile belirlenmeli - bkz. not) -->
+    <plugin filename="gz-sim-hydrodynamics-system" name="gz::sim::systems::Hydrodynamics">
+      <link_name>govde</link_name>
+
+      <!-- Surge (ileri-geri, x) -->
+      <xU>-50000</xU>
+      <xUabsU>-6300</xUabsU>
+
+      <!-- Sway (yanal, y) -->
+      <yV>-50000</yV>
+      <yVabsV>-15000</yVabsV>
+
+      <!-- Heave (dikey, z) - bobbing salınımını söndürür -->
+      <zW>-125000</zW>
+      <zWabsW>-58500</zWabsW>
+
+      <!-- Roll (yalpa) -->
+      <kP>-334000</kP>
+      <kPabsP>-100000</kPabsP>
+
+      <!-- Pitch (baş-kıç vurma) - takla atmayı önleyen kritik terim -->
+      <mQ>-2093000</mQ>
+      <mQabsQ>-600000</mQabsQ>
+
+      <!-- Yaw (sapma) -->
+      <nR>-2093000</nR>
+      <nRabsR>-600000</nRabsR>
+    </plugin>
+
+  </model>
+</sdf>
