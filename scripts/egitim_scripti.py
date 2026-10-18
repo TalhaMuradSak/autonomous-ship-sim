@@ -42,17 +42,17 @@ CIKTI_KOKU = "rl_egitim_ciktilari"
 
 
 def ortam_olustur():
-    env = GemiRLOrtami(hedef_noktalari=HEDEF_NOKTALARI)
+    env = GemiRLOrtami()   # hedef_noktalari=None -> rastgele mod
     env = Monitor(env)
     return env
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--timesteps", type=int, default=10_000,
-                         help="Toplam egitim timestep sayisi (varsayilan: 10000, kucuk bir ilk test icin)")
-    parser.add_argument("--checkpoint-freq", type=int, default=2_000,
-                         help="Kac timestep'te bir checkpoint kaydedilsin")
+    parser.add_argument("--timesteps", type=int, default=500_000,
+                        help="Toplam egitim timestep sayisi (varsayilan: 500000, iyi ogrenme icin)")
+    parser.add_argument("--checkpoint-freq", type=int, default=25_000,
+                        help="Kac timestep'te bir checkpoint kaydedilsin (örn. her 25k step'te bir)")
     parser.add_argument("--devam-et", type=str, default=None,
                          help="Var olan bir .zip checkpoint dosyasindan egitime devam et")
     args = parser.parse_args()
@@ -96,6 +96,8 @@ def main():
     print(f"TensorBoard icin: tensorboard --logdir {tensorboard_dizini}")
 
     try:
+        print(f"Egitim basliyor: {args.timesteps} timestep")
+        print(f"TensorBoard icin: tensorboard --logdir {tensorboard_dizini}")
         model.learn(
             total_timesteps=args.timesteps,
             callback=checkpoint_callback,
@@ -103,6 +105,12 @@ def main():
         )
     except KeyboardInterrupt:
         print("\nEgitim kullanici tarafindan durduruldu, mevcut model kaydediliyor...")
+    finally:
+          # Her durumda modeli kaydedelim ( Ctrl+C incluso )
+        son_model_yolu = os.path.join(calisma_dizini, "son_model.zip")
+        model.save(son_model_yolu)
+        print(f"Model kaydedildi: {son_model_yolu}")
+        env.close()
 
     son_model_yolu = os.path.join(calisma_dizini, "son_model.zip")
     model.save(son_model_yolu)

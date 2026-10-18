@@ -5,7 +5,7 @@
     <!-- Fizik motoru -->
     <physics name="1ms" type="ode">
       <max_step_size>0.001</max_step_size>
-      <real_time_factor>1.0</real_time_factor>
+      <real_time_factor>2.0</real_time_factor>
     </physics>
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>

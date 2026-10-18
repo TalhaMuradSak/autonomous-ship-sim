@@ -25,6 +25,7 @@ try:
     from gz.msgs.laserscan_pb2 import LaserScan
     from gz.msgs.navsat_pb2 import NavSat
     from gz.msgs.double_pb2 import Double
+    from gz.msgs.world_stats_pb2 import WorldStatistics
 except ImportError as e:
     raise ImportError(
         f"gz.transport/gz.msgs import edilemedi ({e}) - "
@@ -44,6 +45,15 @@ def enlem_boylam_to_xy(enlem_deg, boylam_deg):
     return x, y
 
 
+def normalize_angle(a):
+    """Aciyi [-pi, pi] araligina getirir - otonom_gemi.py ile ayni mantik."""
+    while a > math.pi:
+        a -= 2 * math.pi
+    while a < -math.pi:
+        a += 2 * math.pi
+    return a
+
+
 DUNYA_ADI = "gemi_dunyasi"
 MODEL_ADI = "gemi_modeli"
 
@@ -51,6 +61,7 @@ LIDAR_TOPIC = f"/model/{MODEL_ADI}/lidar"
 NAVSAT_TOPIC = f"/model/{MODEL_ADI}/navsat"
 THRUST_TOPIC = f"/model/{MODEL_ADI}/joint/pervane_mili/cmd_thrust"
 RUDDER_TOPIC = f"/model/{MODEL_ADI}/joint/dumen_mili/0/cmd_pos"
+STATS_TOPIC = f"/world/{DUNYA_ADI}/stats"
 
 MAX_THRUST = 40000.0       # N - mevcut navigasyon kontrolcunle ayni
 MAX_RUDDER = 0.6109         # rad, otonom_gemi.py ile birebir ayni deger
@@ -59,8 +70,32 @@ LIDAR_SAMPLES = 180        # sensor tanimindaki <samples> ile ayni
 
 ADIM_SURESI = 0.5          # saniye - her RL step'inde ne kadar simulasyon zamani gececek
 MAKS_ADIM = 1000           # episode basina maksimum step sayisi
+
+# ── Domain randomization sabitleri ─────────────────────────────────────────
+BASLANGIC_X_ARALIGI = (-15.0, 15.0)
+BASLANGIC_Y_ARALIGI = (-15.0, 15.0)
+BASLANGIC_YAW_ARALIGI = (-math.pi, math.pi)
+
+HEDEF_MESAFE_ARALIGI = (30.0, 130.0)  # baslangictan hedefe olan mesafe araligi
+
+# NOT: su an sadece mevcut 3 model (SDF degisikligi gerekmiyor). Gercek boyut
+# cesitliligi icin ileride world.sdf'e farkli olcekte kopyalar eklenip
+# buraya isimleri eklenebilir (orn. "samandira_2", "engel_tekne_2")
+ENGEL_HAVUZU = ["samandira_1", "engel_tekne_1", "mendirek_1"]
+ENGEL_MIN_SAYI = 1
+ENGEL_MAKS_SAYI = len(ENGEL_HAVUZU)
+ENGEL_MIN_MESAFE_BASLANGIC = 15.0
+ENGEL_MIN_MESAFE_HEDEF = 15.0
+ENGEL_MIN_MESAFE_BIRBIRINE = 8.0
+ENGEL_PARK_KONUMU = (-500.0, -500.0, -50.0)  # kullanilmayan engeli sahne disina "park" etmek icin
+
 CARPISMA_ESIGI = 3.0       # metre - bu mesafenin altinda carpisma sayilir
 HEDEFE_ULASMA_ESIGI = 5.0  # metre
+
+# _create_lidar_features() ham LIDAR_SAMPLES (180) noktayi 5 sektor minimumu +
+# 1 en-yakin-engel-acisi'na indirgiyor -> gercek lidar ozellik boyutu 6'dir.
+# observation_space bunu yansitmali, LIDAR_SAMPLES'i degil (asagida duzeltildi).
+LIDAR_FEATURE_SAYISI = 6
 
 
 class GemiRLOrtami(gym.Env):
@@ -80,15 +115,41 @@ class GemiRLOrtami(gym.Env):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, hedef_noktalari):
+    def _create_lidar_features(self, lidar_ranges):
+        """
+        Ham lidar (180 nokta) yerine 5 sektörün minimum mesafesi ve
+        en yakın engelin açısını döndürür.
+        Dönüş: [min_sol, min_sol_on, min_on, min_sag_on, min_sag, min_angle] (6 float)
+        """
+        # 5 eşit bölüme böl (her biri 36° lik)
+        sectors = np.array_split(lidar_ranges, 5)
+        sector_mins = [float(np.min(s)) for s in sectors]  # her sektörün en küçük değeri
+
+          # En yakın engelin açısı (0° = tam ön, + = sol, - = sağ)
+        min_idx = np.argmin(lidar_ranges)
+          # index → açı dönüşümü: -90° ... +90° aralığına normalize eder
+        min_angle = (min_idx - len(lidar_ranges)//2) * (np.pi / len(lidar_ranges))  # radyan
+
+        return np.array(sector_mins + [min_angle], dtype=np.float32)
+
+
+    def __init__(self, hedef_noktalari=None):
         super().__init__()
 
-        self.hedef_noktalari = hedef_noktalari  # [(x1,y1), (x2,y2), ...]
+        # hedef_noktalari verilirse (eval'de oldugu gibi) SABIT rota kullanilir;
+        # verilmezse (egitimde) her reset'te rastgele baslangic+hedef uretilir
+        self._sabit_hedef_modu = hedef_noktalari is not None
+        self.hedef_noktalari = hedef_noktalari if hedef_noktalari is not None else [(0.0, 0.0)]
         self.mevcut_hedef_index = 0
 
+        self._baslangic_x = 0.0
+        self._baslangic_y = 0.0
+        self._baslangic_yaw = 0.0
+
+          # LIDAR_FEATURES = 6 (5 sektör min + açı) + 5 diğer ölçüt = 11 toplam
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0,
-            shape=(LIDAR_SAMPLES + 5,),
+            shape=(LIDAR_FEATURE_SAYISI + 5,),   # 6 lidar özelliği + 5 diğer (mesafe, sin, cos, hız, yaw_rate)
             dtype=np.float32
         )
         self.action_space = spaces.Box(
@@ -107,12 +168,14 @@ class GemiRLOrtami(gym.Env):
         self._son_yaw_rate = 0.0
         self._onceki_yaw = 0.0
         self._onceki_zaman = time.time()
+        self._son_sim_time = 0.0  # /world/.../stats'tan okunan sim zamani (saniye)
 
         self._thrust_pub = self._node.advertise(THRUST_TOPIC, Double)
         self._rudder_pub = self._node.advertise(RUDDER_TOPIC, Double)
 
         self._node.subscribe(LaserScan, LIDAR_TOPIC, self._lidar_callback)
         self._node.subscribe(NavSat, NAVSAT_TOPIC, self._navsat_callback)
+        self._node.subscribe(WorldStatistics, STATS_TOPIC, self._stats_callback)
 
         # TODO: mevcut navigasyon kontrolcundeki gibi ayri bir pose-okuma thread'i baslat
         # (gz model -m gemi_modeli -p subprocess cagrisi ile yaw okunuyor)
@@ -122,6 +185,8 @@ class GemiRLOrtami(gym.Env):
         self._pose_thread.start()
 
         self._adim_sayaci = 0
+        self._onceki_mesafe = None
+        
 
     # ------------------------------------------------------------------
     # Callback'ler
@@ -132,6 +197,10 @@ class GemiRLOrtami(gym.Env):
             ranges = np.array(msg.ranges, dtype=np.float32)
             ranges = np.nan_to_num(ranges, posinf=LIDAR_MAX_RANGE, neginf=0.0)
             self._son_lidar = ranges
+
+    def _stats_callback(self, msg):
+        with self._lock:
+            self._son_sim_time = msg.sim_time.sec + msg.sim_time.nsec / 1e9
 
     def _navsat_callback(self, msg):
         with self._lock:
@@ -195,13 +264,21 @@ class GemiRLOrtami(gym.Env):
         super().reset(seed=seed)
 
         self._adim_sayaci = 0
-        self.mevcut_hedef_index = 0
+        self._onceki_mesafe = None
+
+        if self._sabit_hedef_modu:
+            self.mevcut_hedef_index = 0
+            self._baslangic_x, self._baslangic_y, self._baslangic_yaw = 0.0, 0.0, 0.0
+        else:
+            self._rastgele_baslangic_ve_hedef_olustur()
 
         self._sifir_hiza_getir()
-        self._model_pozisyonunu_ayarla(MODEL_ADI, 0.0, 0.0, -0.1091)
+        self._model_pozisyonunu_ayarla(
+            MODEL_ADI, self._baslangic_x, self._baslangic_y, -0.1091, yaw=self._baslangic_yaw
+        )
         self._engelleri_rastgele_yerlestir()
 
-        time.sleep(0.5)  # simulasyonun oturmasini, lidar/navsat'in guncellenmesini bekle
+        time.sleep(0.5)
         gozlem = self._gozlem_olustur()
         return gozlem, {}
 
@@ -250,11 +327,62 @@ class GemiRLOrtami(gym.Env):
         # uyari loglamayi dusun - RL egitiminde sessizce gecmesi episode'lari
         # sessizce kirletebilir
 
+    def _rastgele_baslangic_ve_hedef_olustur(self):
+        self._baslangic_x = float(self.np_random.uniform(*BASLANGIC_X_ARALIGI))
+        self._baslangic_y = float(self.np_random.uniform(*BASLANGIC_Y_ARALIGI))
+        self._baslangic_yaw = float(self.np_random.uniform(*BASLANGIC_YAW_ARALIGI))
+
+        mesafe = self.np_random.uniform(*HEDEF_MESAFE_ARALIGI)
+        aci = self.np_random.uniform(-math.pi, math.pi)
+        hedef_x = self._baslangic_x + mesafe * math.cos(aci)
+        hedef_y = self._baslangic_y + mesafe * math.sin(aci)
+
+        self.hedef_noktalari = [(hedef_x, hedef_y)]
+        self.mevcut_hedef_index = 0
+
     def _engelleri_rastgele_yerlestir(self):
-        engel_isimleri = ["samandira_1", "engel_tekne_1", "mendirek_1"]
-        for isim in engel_isimleri:
-            x = self.np_random.uniform(20, 150)
-            y = self.np_random.uniform(-25, 25)
+        baslangic = np.array([self._baslangic_x, self._baslangic_y])
+        hedef = np.array(self.hedef_noktalari[0])
+
+        # engelleri baslangic-hedef hattini kapsayan kutu icinde dagit, kutuyu
+        # rota disina da engel dusebilsin diye biraz genisletiyoruz
+        min_x, max_x = sorted([baslangic[0], hedef[0]])
+        min_y, max_y = sorted([baslangic[1], hedef[1]])
+        pay = 20.0
+        x_araligi = (min_x - pay, max_x + pay)
+        y_araligi = (min_y - pay, max_y + pay)
+
+        engel_sayisi = int(self.np_random.integers(ENGEL_MIN_SAYI, ENGEL_MAKS_SAYI + 1))
+        aktif_engeller = set(
+            self.np_random.choice(ENGEL_HAVUZU, size=engel_sayisi, replace=False)
+        )
+
+        yerlesmis = []
+        for isim in ENGEL_HAVUZU:
+            if isim not in aktif_engeller:
+                self._model_pozisyonunu_ayarla(isim, ENGEL_PARK_KONUMU[0], ENGEL_PARK_KONUMU[1], ENGEL_PARK_KONUMU[2])
+                continue
+
+            x, y = None, None
+            for _deneme in range(20):
+                aday_x = self.np_random.uniform(*x_araligi)
+                aday_y = self.np_random.uniform(*y_araligi)
+                aday = np.array([aday_x, aday_y])
+                if np.linalg.norm(aday - baslangic) < ENGEL_MIN_MESAFE_BASLANGIC:
+                    continue
+                if np.linalg.norm(aday - hedef) < ENGEL_MIN_MESAFE_HEDEF:
+                    continue
+                if any(np.linalg.norm(aday - k) < ENGEL_MIN_MESAFE_BIRBIRINE for k in yerlesmis):
+                    continue
+                x, y = aday_x, aday_y
+                break
+
+            if x is None:
+                # 20 denemede uygun yer bulunamadi (kucuk kutu + cok engel durumu) -
+                # RL egitiminin tikanmasindansa kusurlu bir yerlesimi kabul et
+                x, y = aday_x, aday_y
+
+            yerlesmis.append(np.array([x, y]))
             self._model_pozisyonunu_ayarla(isim, x, y, 0.0)
 
     def step(self, action):
@@ -266,7 +394,7 @@ class GemiRLOrtami(gym.Env):
         self._thrust_pub.publish(Double(data=thrust_komutu))
         self._rudder_pub.publish(Double(data=rudder_komutu))
 
-        time.sleep(ADIM_SURESI)
+        self._sim_zamanina_gore_bekle(ADIM_SURESI)
         self._adim_sayaci += 1
 
         gozlem = self._gozlem_olustur()
@@ -277,13 +405,42 @@ class GemiRLOrtami(gym.Env):
 
         return gozlem, odul, sonlandi, kesildi, {"carpisti": carpisti, "hedefe_ulasti": hedefe_ulasti}
 
+    def _sim_zamanina_gore_bekle(self, sure_saniye, timeout_carpani=5.0):
+        """
+        world.sdf'teki real_time_factor=0 (sinirsiz) ayariyla birlikte kullanilir:
+        gercek saat yerine sim_time'in kendisinin ADIM_SURESI kadar ilerlemesini
+        bekler. RTF > 1 oldugunda bu, gercek zamanda cok daha kisa surer ve
+        egitimi hizlandirir. timeout_carpani, stats topic'i herhangi bir sebeple
+        akmayi keserse (ornegin sim duraklatilirsa) sonsuza kadar beklememek icin
+        bir guvenlik siniri.
+        """
+        with self._lock:
+            baslangic_sim_zamani = self._son_sim_time
+        hedef_sim_zamani = baslangic_sim_zamani + sure_saniye
+
+        gercek_baslangic = time.time()
+        timeout = sure_saniye * timeout_carpani + 2.0  # +2s: ilk stats mesaji icin pay
+
+        while True:
+            with self._lock:
+                simdi_sim_zamani = self._son_sim_time
+            if simdi_sim_zamani >= hedef_sim_zamani:
+                break
+            if time.time() - gercek_baslangic > timeout:
+                # guvenlik agi: stats akmiyor olabilir (sim duraklatilmis vs.)
+                # egitimin tamamen kilitlenmesindense kucuk bir gercek-zaman
+                # beklemesiyle devam et
+                time.sleep(sure_saniye)
+                break
+            time.sleep(0.01)
+
     # ------------------------------------------------------------------
     # Yardimci fonksiyonlar
     # ------------------------------------------------------------------
 
     def _gozlem_olustur(self):
         with self._lock:
-            lidar_norm = np.clip(self._son_lidar / LIDAR_MAX_RANGE, 0, 1)
+            lidar_raw = self._son_lidar.copy()   # ham lidar verisi
             konum = self._son_konum.copy()
             yaw = self._son_yaw
             yaw_rate = self._son_yaw_rate
@@ -291,10 +448,16 @@ class GemiRLOrtami(gym.Env):
         hx, hy = self.hedef_noktalari[self.mevcut_hedef_index]
         dx, dy = hx - konum[0], hy - konum[1]
         mesafe = np.hypot(dx, dy)
-        bearing = np.arctan2(dy, dx) - yaw
+        bearing = normalize_angle(np.arctan2(dy, dx) - yaw)
+
+          # --- YENİ: Lidar özelliklerini çıkar ---
+        lidar_features = self._create_lidar_features(lidar_raw)   # 6 boyutlu vektor
+          # Lidar normunu ham veridense özelliklerle değiştiriyoruz
+          # (isterseniz ikisini de birleştirerek daha uzun gözlem yapabilirsiniz)
+          # lidar_norm = np.clip(lidar_raw / LIDAR_MAX_RANGE, 0, 1)
 
         gozlem = np.concatenate([
-            lidar_norm,
+            lidar_features,           # <-- 6 boyutlu sektör + açı
             [
                 np.clip(mesafe / 200.0, 0, 1),
                 np.sin(bearing),
@@ -310,15 +473,42 @@ class GemiRLOrtami(gym.Env):
         with self._lock:
             min_lidar = float(np.min(self._son_lidar))
             konum = self._son_konum.copy()
+            yaw = self._son_yaw
 
         hx, hy = self.hedef_noktalari[self.mevcut_hedef_index]
-        mesafe = np.hypot(hx - konum[0], hy - konum[1])
+        dx, dy = hx - konum[0], hy - konum[1]
+        mesafe = np.hypot(dx, dy)
+        bearing = normalize_angle(np.arctan2(dy, dx) - yaw)
 
         carpisti = min_lidar < CARPISMA_ESIGI
         hedefe_ulasti = mesafe < HEDEFE_ULASMA_ESIGI
 
         odul = -0.01                       # her adimda kucuk zaman cezasi
-        odul += -mesafe * 0.01             # hedefe uzaklik cezasi (yakinlik tesvigi)
+
+        SAFE_DISTANCE = 15.0   # metre - bu mesafenin altında ceza başlar
+        OBSTACLE_WEIGHT = 1.2  # ceza katsayısı (deneyerek 0.8‑2.0 arasında ayarlayın)
+        if min_lidar < SAFE_DISTANCE:
+            # Engel gerçekten çok yakınsa (örn. < 3m) ekstra darbe
+            if min_lidar < CARPISMA_ESIGI:
+                odul -= 50.0   # çarpışma yakınlığı cezası
+            else:
+                odul -= (SAFE_DISTANCE - min_lidar) * OBSTACLE_WEIGHT
+
+        # ILERLEME ODULU (potential-based shaping): eski "-mesafe * 0.01" sabit
+        # cezasinin gradyani cok zayifti (8m->5m kapamak sadece +0.03 kazandiriyordu,
+        # zaman cezasindan daha ucuzdu, model son birkac metrede durup birakiyordu).
+        # Bunun yerine bu adimda hedefe GERCEKTEN ne kadar yaklasildigini odullendiriyoruz.
+        if self._onceki_mesafe is not None:
+            ilerleme = self._onceki_mesafe - mesafe   # pozitif = yaklasti, negatif = uzaklasti
+            odul += ilerleme * 1.0                     # TODO: katsayiyi (1.0) deneyerek ayarla
+        self._onceki_mesafe = mesafe
+
+        # PRUVA HIZALAMA BONUSU: mesafe cezasi tek basina "pruva hedefe donuk +
+        # ileri git" ile "kic hedefe donuk + geri git" arasinda ayrim yapamiyor,
+        # ikisi de mesafeyi ayni hizda azaltiyor. Bu terim pruvanin hedefe bakma
+        # durumunu odullendirerek bu simetriyi kirar ve ileri-gitme davranisini
+        # tercih ettirir. cos(bearing)=1 pruva tam hedefte, =-1 kic hedefte.
+        odul += np.cos(bearing) * 0.05
 
         if min_lidar < CARPISMA_ESIGI * 3:
             odul -= (CARPISMA_ESIGI * 3 - min_lidar) * 0.5  # engele yaklasma cezasi
@@ -330,6 +520,7 @@ class GemiRLOrtami(gym.Env):
             if self.mevcut_hedef_index < len(self.hedef_noktalari) - 1:
                 self.mevcut_hedef_index += 1
                 hedefe_ulasti = False  # son hedef degilse episode devam etsin
+                self._onceki_mesafe = None  # yeni hedef icin ilerleme referansini sifirla
 
         return odul, carpisti, hedefe_ulasti
 
